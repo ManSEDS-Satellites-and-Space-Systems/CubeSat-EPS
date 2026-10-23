@@ -1,0 +1,123 @@
+(footprint "18650-THT"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(property "Reference" "REF**"
+		(at 0 -0.5 0)
+		(unlocked yes)
+		(layer "F.SilkS")
+		(uuid "4d4a0eb7-ddba-4936-9c92-15b7863dcd2a")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+		)
+	)
+	(property "Value" "18650-THT"
+		(at 0 1 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "17a12470-8f51-45c7-afb8-f9c2c18030dd")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "a09c2499-8e31-4663-ba5a-3bfd019ff3e1")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "e65d5ff1-355b-4012-8d3d-f1d9cf408837")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr through_hole board_only exclude_from_pos_files exclude_from_bom allow_missing_courtyard)
+	(fp_rect
+		(start -35 -8)
+		(end -31 8)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "b9876235-8eb8-41fa-934a-2eb2b14cbb64")
+	)
+	(fp_rect
+		(start 31 -8)
+		(end 35 8)
+		(stroke
+			(width 0.05)
+			(type default)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "14ec44f2-1a30-4e07-ae42-0b54a2293b90")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 2.5 0)
+		(unlocked yes)
+		(layer "F.Fab")
+		(uuid "1d84846e-dd2c-4b1a-ba7e-9fa21dd56ade")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "1" thru_hole roundrect
+		(at -33 0 90)
+		(size 14.5 3)
+		(drill oval 12.5 1)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(roundrect_rratio 0.15)
+		(thermal_bridge_angle 45)
+		(uuid "d7564027-6088-4b1d-a495-453d77517ba4")
+	)
+	(pad "2" thru_hole roundrect
+		(at 33 0 90)
+		(size 14.5 3)
+		(drill oval 12.5 1)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(roundrect_rratio 0.15)
+		(thermal_bridge_angle 45)
+		(uuid "b717337b-af7b-433e-9d09-0fb19d9e09ad")
+	)
+	(embedded_fonts no)
+	(model "${KIPRJMOD}/EPS_PCB.pretty/Sony Murata VTC5A 18650 2600mAh 25A Battery.step"
+		(offset
+			(xyz 32.5 0 9)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz -0 90 -0)
+		)
+	)
+)
