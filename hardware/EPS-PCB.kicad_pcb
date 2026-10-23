@@ -2798,6 +2798,17 @@
 			(uuid "e9be4414-b89f-4664-961b-890d884bef9f")
 		)
 		(embedded_fonts no)
+		(model "${KIPRJMOD}/EPS_PCB.pretty/mount.step"
+			(offset
+				(xyz -4 0 0)
+			)
+			(scale
+				(xyz 1 1 1)
+			)
+			(rotate
+				(xyz -90 -0 -90)
+			)
+		)
 	)
 	(footprint "MountingHole:MountingHole_3.2mm_M3_DIN965_Pad"
 		(layer "F.Cu")
@@ -4537,6 +4548,17 @@
 			(uuid "0b1db12c-03fd-4d31-8cb4-94288d200961")
 		)
 		(embedded_fonts no)
+		(model "${KIPRJMOD}/EPS_PCB.pretty/mount.step"
+			(offset
+				(xyz -4 0 0)
+			)
+			(scale
+				(xyz 1 1 1)
+			)
+			(rotate
+				(xyz -90 -0 -90)
+			)
+		)
 	)
 	(footprint "Capacitor_SMD:C_0603_1608Metric"
 		(layer "F.Cu")
