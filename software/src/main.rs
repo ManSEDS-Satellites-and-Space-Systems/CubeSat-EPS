@@ -4,12 +4,12 @@
 mod mcp9800;
 mod mppt;
 
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use defmt_rtt as _;
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
-use embassy_futures::select::Either;
+use embassy_futures::select::Either3;
 use embassy_stm32::can::CanConfigurator;
 use embassy_stm32::can::{RxBuf, TxBuf};
 use embassy_stm32::exti::ExtiInput;
@@ -50,6 +50,7 @@ bind_interrupts!(struct Irqs {
     DMA1_CHANNEL3 => dma::InterruptHandler<peripherals::DMA1_CH3>;
     DMA1_CHANNEL4 => dma::InterruptHandler<peripherals::DMA1_CH4>;
     EXTI0 => exti::InterruptHandler<interrupt::typelevel::EXTI0>;
+    EXTI1 => exti::InterruptHandler<interrupt::typelevel::EXTI1>;
     EXTI2 => exti::InterruptHandler<interrupt::typelevel::EXTI2>;
 });
 
@@ -59,12 +60,18 @@ const MCP9800_ADDR_A5: u8 = 0b1001101;
 
 /// Change to CV regulation when voltage reach
 const BATTERY_CV_VOLTAGE: i32 = 8400;
+/// Change back to CC regulation when voltage drop
+const BATTERY_CV_EXIT: i32 = 8300;
+/// Minimum battery charging temperature in m℃
+const BATTERY_CHARGE_MIN_TEMP: i32 = 5000;
 /// Delay EPS enable in seconds
 const EPS_OUTPUT_DELAY: u64 = 0;
 
 static CAN_CSP_IFACE: StaticCell<CanInterface<CanStm32Driver>> = StaticCell::new();
 static CAN_TX_BUF: StaticCell<TxBuf<4>> = StaticCell::new();
 static CAN_RX_BUF: StaticCell<RxBuf<4>> = StaticCell::new();
+
+static EPS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Battery voltage in mV
 static BAT_VOLTAGE: AtomicI32 = AtomicI32::new(0);
@@ -81,10 +88,9 @@ static BAT_TEMP2: AtomicI32 = AtomicI32::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChargeState {
-    UnderTemp,
+    TempFault,
     ChargeCC,
-    ChargeCV,
-    Full,
+    ChargeCV
 }
 
 /// 30 Hz 50% duty cycle to reset external windowed watchdog
@@ -131,12 +137,12 @@ async fn mppt_control(
     mut pwm5: SimplePwmChannel<'static, peripherals::TIM4>,
     mut pwm6: SimplePwmChannel<'static, peripherals::TIM4>,
 ) {
-    let mut mppt1 = Mppt::new(0.0);
-    let mut mppt2 = Mppt::new(0.0);
-    let mut mppt3 = Mppt::new(0.0);
-    let mut mppt4 = Mppt::new(0.0);
-    let mut mppt5 = Mppt::new(0.0);
-    let mut mppt6 = Mppt::new(0.0);
+    let mut mppt1 = Mppt::new(0.0, 0.001);
+    let mut mppt2 = Mppt::new(0.0, 0.001);
+    let mut mppt3 = Mppt::new(0.0, 0.001);
+    let mut mppt4 = Mppt::new(0.0, 0.001);
+    let mut mppt5 = Mppt::new(0.0, 0.001);
+    let mut mppt6 = Mppt::new(0.0, 0.001);
 
     let mut ina_1 = Ina3221Async::new(dev1, INA3221_I2C_ADDR_GND);
     let mut ina_2 = Ina3221Async::new(dev2, INA3221_I2C_ADDR_VS);
@@ -174,46 +180,128 @@ async fn mppt_control(
 
         return Some(mppt.update(mppt_v, mppt_i));
     };
+    
+    let mut duty1 = 0.0;
+    let mut duty2 = 0.0;
+    let mut duty3 = 0.0;
+    let mut duty4 = 0.0;
+    let mut duty5 = 0.0;
+    let mut duty6 = 0.0;
+
+    // assume battery is under temperature
+    let mut state = ChargeState::TempFault;
 
     // infinite loop
     loop {
-        // disable MPPT regulation when battery reaches CV voltage
-        if BAT_VOLTAGE.load(Ordering::Relaxed) > BATTERY_CV_VOLTAGE {
-            mppt1.reset();
-            mppt2.reset();
-            mppt3.reset();
-            mppt4.reset();
-            mppt5.reset();
-            mppt6.reset();
+        // disable mppt
+        if EPS_ENABLED.load(Ordering::Relaxed) == false {
+            duty1 = 0.0;
+            duty2 = 0.0;
+            duty3 = 0.0;
+            duty4 = 0.0;
+            duty5 = 0.0;
+            duty6 = 0.0;
+        }
 
-            pwm1.set_duty_cycle(0);
-            pwm2.set_duty_cycle(0);
-            pwm3.set_duty_cycle(0);
-            pwm4.set_duty_cycle(0);
-            pwm5.set_duty_cycle(0);
-            pwm6.set_duty_cycle(0);
+        // Enter under temeperature state if temperature is too low
+        if BAT_TEMP1.load(Ordering::Relaxed) < BATTERY_CHARGE_MIN_TEMP
+            || BAT_TEMP2.load(Ordering::Relaxed) < BATTERY_CHARGE_MIN_TEMP
+        {
+            state = ChargeState::TempFault
+        }
 
-            tick.next().await;
-            continue;
+        match state {
+            // when under or over temperature, disable charging and do voltage regulation
+            ChargeState::TempFault => {
+                // todo: disable charging
+                let vbat = BAT_VOLTAGE.load(Ordering::Relaxed);
+
+                if vbat > BATTERY_CV_VOLTAGE{
+                    duty1 -= 0.001;
+                    duty2 -= 0.001;
+                    duty3 -= 0.001;
+                    duty4 -= 0.001;
+                    duty5 -= 0.001;
+                    duty6 -= 0.001;
+                }
+
+                if vbat < BATTERY_CV_VOLTAGE{
+                    duty1 += 0.001;
+                    duty2 += 0.001;
+                    duty3 += 0.001;
+                    duty4 += 0.001;
+                    duty5 += 0.001;
+                    duty6 += 0.001;
+                }
+
+                // exit state if temperature is above threshold
+                if BAT_TEMP1.load(Ordering::Relaxed) >= BATTERY_CHARGE_MIN_TEMP
+                    && BAT_TEMP2.load(Ordering::Relaxed) >= BATTERY_CHARGE_MIN_TEMP
+                {
+                    state = ChargeState::ChargeCC
+                }
+            }
+            // Current mode charging, no voltage regulation required
+            ChargeState::ChargeCC => {
+                if let Some(duty) = update(&mut ina_1, ChannelId::Channel1, &mut mppt1).await {
+                    duty1 = duty;
+                }
+                if let Some(duty) = update(&mut ina_1, ChannelId::Channel2, &mut mppt2).await {
+                    duty2 = duty;
+                }
+                if let Some(duty) = update(&mut ina_1, ChannelId::Channel3, &mut mppt3).await {
+                    duty3 = duty;
+                }
+                if let Some(duty) = update(&mut ina_2, ChannelId::Channel3, &mut mppt4).await {
+                    duty4 = duty;
+                }
+                if let Some(duty) = update(&mut ina_2, ChannelId::Channel2, &mut mppt5).await {
+                    duty5 = duty;
+                }
+                if let Some(duty) = update(&mut ina_2, ChannelId::Channel1, &mut mppt6).await {
+                    duty6 = duty;
+                }
+
+                // Enter CV charging if battery voltage reaches threshold
+                if BAT_VOLTAGE.load(Ordering::Relaxed) >= BATTERY_CV_VOLTAGE{
+                    state = ChargeState::ChargeCV;
+                }
+            }
+            // Voltage mode charging, voltage is regulated
+            ChargeState::ChargeCV => {
+                let vbat = BAT_VOLTAGE.load(Ordering::Relaxed);
+
+                if vbat > BATTERY_CV_VOLTAGE{
+                    duty1 -= 0.001;
+                    duty2 -= 0.001;
+                    duty3 -= 0.001;
+                    duty4 -= 0.001;
+                    duty5 -= 0.001;
+                    duty6 -= 0.001;
+                }
+
+                if vbat < BATTERY_CV_VOLTAGE{
+                    duty1 += 0.001;
+                    duty2 += 0.001;
+                    duty3 += 0.001;
+                    duty4 += 0.001;
+                    duty5 += 0.001;
+                    duty6 += 0.001;
+                }
+
+                // Go back to CC charging when voltage dropped
+                if vbat < BATTERY_CV_EXIT{
+                    state = ChargeState::ChargeCC;
+                }
+            }
         }
-        if let Some(duty) = update(&mut ina_1, ChannelId::Channel1, &mut mppt1).await {
-            pwm1.set_duty_cycle((pwm1.max_duty_cycle() as f32 * duty) as u32);
-        }
-        if let Some(duty) = update(&mut ina_1, ChannelId::Channel2, &mut mppt2).await {
-            pwm2.set_duty_cycle((pwm2.max_duty_cycle() as f32 * duty) as u32);
-        }
-        if let Some(duty) = update(&mut ina_1, ChannelId::Channel3, &mut mppt3).await {
-            pwm3.set_duty_cycle((pwm3.max_duty_cycle() as f32 * duty) as u32);
-        }
-        if let Some(duty) = update(&mut ina_2, ChannelId::Channel3, &mut mppt4).await {
-            pwm4.set_duty_cycle((pwm4.max_duty_cycle() as f32 * duty) as u32);
-        }
-        if let Some(duty) = update(&mut ina_2, ChannelId::Channel2, &mut mppt5).await {
-            pwm5.set_duty_cycle((pwm5.max_duty_cycle() as f32 * duty) as u32);
-        }
-        if let Some(duty) = update(&mut ina_2, ChannelId::Channel1, &mut mppt6).await {
-            pwm6.set_duty_cycle((pwm6.max_duty_cycle() as f32 * duty) as u32);
-        }
+
+        pwm1.set_duty_cycle((pwm1.max_duty_cycle() as f32 * duty1) as u32);
+        pwm2.set_duty_cycle((pwm2.max_duty_cycle() as f32 * duty2) as u32);
+        pwm3.set_duty_cycle((pwm3.max_duty_cycle() as f32 * duty3) as u32);
+        pwm4.set_duty_cycle((pwm4.max_duty_cycle() as f32 * duty4) as u32);
+        pwm5.set_duty_cycle((pwm5.max_duty_cycle() as f32 * duty5) as u32);
+        pwm6.set_duty_cycle((pwm6.max_duty_cycle() as f32 * duty6) as u32);
 
         tick.next().await;
     }
@@ -271,23 +359,50 @@ async fn eps_control(
     mut en_3v3: Output<'static>,
     mut flt_5v: ExtiInput<'static, Async>,
     mut flt_3v3: ExtiInput<'static, Async>,
+    mut kill_switch: ExtiInput<'static, Async>
 ) {
-    // wait for delay
-    let timer = Timer::after_secs(EPS_OUTPUT_DELAY);
+    // handle kill switch init condition
+    if kill_switch.is_high(){
+        // wait for delay
+        Timer::after_secs(EPS_OUTPUT_DELAY).await;
+        // enable voltages
+        en_5v.set_high();
+        en_3v3.set_high();
 
-    timer.await;
-
-    // enable voltages
-    en_5v.set_high();
-    en_3v3.set_high();
+        EPS_ENABLED.store(true, Ordering::Relaxed);
+    }
 
     loop {
-        match embassy_futures::select::select(flt_5v.wait_for_falling_edge(), flt_3v3.wait_for_falling_edge()).await{
-            Either::First(_) => {
+        // todo: kill switch
+        match embassy_futures::select::select3(
+            flt_5v.wait_for_falling_edge(),
+            flt_3v3.wait_for_falling_edge(),
+            kill_switch.wait_for_any_edge()
+        )
+        .await
+        {
+            Either3::First(_) => {
+                // todo: handle fault
+            }
+            Either3::Second(_) => {
                 // todo: handle fault
             },
-            Either::Second(_) => {
-                // todo: handle fault
+            Either3::Third(_) => {
+                if kill_switch.is_high(){
+                    // wait for delay
+                    Timer::after_secs(EPS_OUTPUT_DELAY).await;
+                    // enable voltages
+                    en_5v.set_high();
+                    en_3v3.set_high();
+
+                    EPS_ENABLED.store(true, Ordering::Relaxed);
+                } else{
+                    // enable voltages
+                    en_5v.set_low();
+                    en_3v3.set_low();
+
+                    EPS_ENABLED.store(false, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -312,7 +427,9 @@ async fn heater_control(
         BAT_TEMP1.store((bat1_temp * 1000.0) as i32, Ordering::Relaxed);
         BAT_TEMP2.store((bat2_temp * 1000.0) as i32, Ordering::Relaxed);
 
-        // todo: PID heater control
+        if EPS_ENABLED.load(Ordering::Relaxed) {
+            // todo: PID heater control
+        }
 
         tick.next().await;
     }
@@ -415,11 +532,13 @@ async fn main(spawner: Spawner) {
     let pwm5 = timer4_chs.ch3;
     let pwm6 = timer4_chs.ch1;
 
-    let en_5v = Output::new(p.PA1, Level::Low, Speed::Medium);
+    let en_5v = Output::new(p.PA0, Level::Low, Speed::Medium);
     let en_3v3 = Output::new(p.PA3, Level::Low, Speed::Medium);
 
-    let flt_5v = ExtiInput::new(p.PA0, p.EXTI0, Pull::Up, Irqs);
+    let flt_5v = ExtiInput::new(p.PA1, p.EXTI1, Pull::Up, Irqs);
     let flt_3v3 = ExtiInput::new(p.PA2, p.EXTI2, Pull::Up, Irqs);
+
+    let kill_switch = ExtiInput::new(p.PB0, p.EXTI0, Pull::Up, Irqs);
 
     // spawn mppt control task
     spawner.spawn(mppt_control(i2c_dev1, i2c_dev2, pwm1, pwm2, pwm3, pwm4, pwm5, pwm6).unwrap());
@@ -429,9 +548,9 @@ async fn main(spawner: Spawner) {
 
     // spawn heater control task
     spawner.spawn(heater_control(i2c_dev4, i2c_dev5).unwrap());
-    
+
     // spawn eps control task
-    spawner.spawn(eps_control(en_5v, en_3v3, flt_5v, flt_3v3).unwrap());
+    spawner.spawn(eps_control(en_5v, en_3v3, flt_5v, flt_3v3, kill_switch).unwrap());
 
     // initialise can
     let mut can_config = CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs);
@@ -460,7 +579,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(bms_service().unwrap());
     // spawn EPS service task
     spawner.spawn(eps_service().unwrap());
-    
+
     loop {
         csp::route_work().await;
     }

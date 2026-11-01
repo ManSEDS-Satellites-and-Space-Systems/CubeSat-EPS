@@ -3577,16 +3577,6 @@
 	)
 	(wire
 		(pts
-			(xy 105.41 43.18) (xy 95.25 43.18)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "285f07f1-c368-476e-bf85-7377b461b8ff")
-	)
-	(wire
-		(pts
 			(xy 95.25 58.42) (xy 109.22 58.42)
 		)
 		(stroke
@@ -4047,13 +4037,13 @@
 	)
 	(wire
 		(pts
-			(xy 105.41 45.72) (xy 95.25 45.72)
+			(xy 95.25 43.18) (xy 105.41 43.18)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "79128395-39ba-4724-81dd-df5d952b4573")
+		(uuid "7b0d288e-289f-40ad-bc52-925bc67caa73")
 	)
 	(wire
 		(pts
@@ -4787,6 +4777,16 @@
 	)
 	(wire
 		(pts
+			(xy 95.25 45.72) (xy 105.41 45.72)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "ebd98d45-c1b4-4d2c-a5f5-92bbd880646c")
+	)
+	(wire
+		(pts
 			(xy 128.27 85.09) (xy 128.27 87.63)
 		)
 		(stroke
@@ -5427,7 +5427,7 @@
 	)
 	(hierarchical_label "5v_FLT"
 		(shape input)
-		(at 105.41 43.18 0)
+		(at 105.41 45.72 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5449,7 +5449,7 @@
 	)
 	(hierarchical_label "5v_EN"
 		(shape output)
-		(at 105.41 45.72 0)
+		(at 105.41 43.18 0)
 		(effects
 			(font
 				(size 1.27 1.27)
