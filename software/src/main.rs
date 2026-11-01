@@ -139,6 +139,7 @@ async fn mppt_control(
     mut pwm4: SimplePwmChannel<'static, peripherals::TIM2>,
     mut pwm5: SimplePwmChannel<'static, peripherals::TIM4>,
     mut pwm6: SimplePwmChannel<'static, peripherals::TIM4>,
+    mut charge_disable: Output<'static>
 ) {
     let mut mppt1 = Mppt::new(0.0, 0.001);
     let mut mppt2 = Mppt::new(0.0, 0.001);
@@ -196,16 +197,6 @@ async fn mppt_control(
 
     // infinite loop
     loop {
-        // disable mppt
-        if EPS_ENABLED.load(Ordering::Relaxed) == false {
-            duty1 = 0.0;
-            duty2 = 0.0;
-            duty3 = 0.0;
-            duty4 = 0.0;
-            duty5 = 0.0;
-            duty6 = 0.0;
-        }
-
         // Enter under temeperature state if temperature is too low
         if BAT_TEMP1.load(Ordering::Relaxed) < BATTERY_CHARGE_MIN_TEMP
             || BAT_TEMP2.load(Ordering::Relaxed) < BATTERY_CHARGE_MIN_TEMP
@@ -215,10 +206,13 @@ async fn mppt_control(
             state = ChargeState::TempFault
         }
 
+        // State Machine
         match state {
             // when under or over temperature, disable charging and do voltage regulation
             ChargeState::TempFault => {
-                // todo: disable charging
+                // disable charging
+                charge_disable.set_high();
+
                 let vsys = SYS_VOLTAGE.load(Ordering::Relaxed);
 
                 if vsys > BATTERY_CV_VOLTAGE{
@@ -252,6 +246,8 @@ async fn mppt_control(
                     mppt5.set_duty(duty5);
                     mppt6.set_duty(duty6);
 
+                    charge_disable.set_low();
+
                     state = ChargeState::ChargeCC
                 }
             }
@@ -275,6 +271,8 @@ async fn mppt_control(
                 if let Some(duty) = update(&mut ina_2, ChannelId::Channel1, &mut mppt6).await {
                     duty6 = duty;
                 }
+
+                charge_disable.set_low();
 
                 // Enter CV charging if battery voltage reaches threshold
                 if BAT_VOLTAGE.load(Ordering::Relaxed) >= BATTERY_CV_VOLTAGE{
@@ -303,6 +301,8 @@ async fn mppt_control(
                     duty6 += 0.001;
                 }
 
+                charge_disable.set_low();
+
                 // Go back to CC charging when voltage dropped
                 if vbat < BATTERY_CV_EXIT{
                     mppt1.set_duty(duty1);
@@ -315,6 +315,16 @@ async fn mppt_control(
                     state = ChargeState::ChargeCC;
                 }
             }
+        }
+
+        // Disable MPPT if EPS is not enabled
+        if EPS_ENABLED.load(Ordering::Relaxed) == false {
+            duty1 = 0.0;
+            duty2 = 0.0;
+            duty3 = 0.0;
+            duty4 = 0.0;
+            duty5 = 0.0;
+            duty6 = 0.0;
         }
 
         duty1 = duty1.clamp(0.0, 1.0);
@@ -366,6 +376,10 @@ async fn bms_control(dev3: I2cDevice<'static, NoopRawMutex, I2c<'static, Async, 
             .get_current_ma(ChannelId::Channel2, SHUNT_RESISTANCE)
             .await
             .unwrap_or(0.0);
+        let v_sys = ina_3
+            .get_bus_voltage_mv(ChannelId::Channel3)
+            .await
+            .unwrap_or(0.0);
         let i_sys = ina_3
             .get_current_ma(ChannelId::Channel3, SHUNT_RESISTANCE)
             .await
@@ -375,6 +389,7 @@ async fn bms_control(dev3: I2cDevice<'static, NoopRawMutex, I2c<'static, Async, 
         BAT_VOLTAGE.store(v_bat as i32, Ordering::Relaxed);
         BAT_CURRENT.store(i_bat as i32, Ordering::Relaxed);
         SOLAR_CURRENT.store(i_mppt as i32, Ordering::Relaxed);
+        SYS_VOLTAGE.store(v_sys as i32, Ordering::Relaxed);
         SYS_CURRENT.store(i_sys as i32, Ordering::Relaxed);
 
         tick.next().await;
@@ -568,8 +583,10 @@ async fn main(spawner: Spawner) {
 
     let kill_switch = ExtiInput::new(p.PB0, p.EXTI0, Pull::Up, Irqs);
 
+    let charge_disable = Output::new(p.PA10, Level::High, Speed::Medium);
+
     // spawn mppt control task
-    spawner.spawn(mppt_control(i2c_dev1, i2c_dev2, pwm1, pwm2, pwm3, pwm4, pwm5, pwm6).unwrap());
+    spawner.spawn(mppt_control(i2c_dev1, i2c_dev2, pwm1, pwm2, pwm3, pwm4, pwm5, pwm6, charge_disable).unwrap());
 
     // spawn bms control task
     spawner.spawn(bms_control(i2c_dev3).unwrap());
