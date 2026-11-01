@@ -9,18 +9,20 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use defmt_rtt as _;
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
+use embassy_futures::select::Either;
 use embassy_stm32::can::CanConfigurator;
 use embassy_stm32::can::{RxBuf, TxBuf};
-use embassy_stm32::gpio::{Level, Output, OutputType, Speed};
+use embassy_stm32::exti::ExtiInput;
+use embassy_stm32::gpio::{Level, Output, OutputType, Pull, Speed};
 use embassy_stm32::i2c::{I2c, Master};
 use embassy_stm32::mode::Async;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm, SimplePwmChannel};
-use embassy_stm32::{Config, bind_interrupts, can, dma, i2c, peripherals, timer};
+use embassy_stm32::{Config, bind_interrupts, can, dma, exti, i2c, interrupt, peripherals, timer};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Ticker};
+use embassy_time::{Duration, Ticker, Timer};
 // provides panic handler
 use ina3221_dd::{
     AveragingMode, ChannelId, ConversionTime, INA3221_I2C_ADDR_GND, INA3221_I2C_ADDR_SCL,
@@ -47,6 +49,8 @@ bind_interrupts!(struct Irqs {
     DMA1_CHANNEL2 => dma::InterruptHandler<peripherals::DMA1_CH2>;
     DMA1_CHANNEL3 => dma::InterruptHandler<peripherals::DMA1_CH3>;
     DMA1_CHANNEL4 => dma::InterruptHandler<peripherals::DMA1_CH4>;
+    EXTI0 => exti::InterruptHandler<interrupt::typelevel::EXTI0>;
+    EXTI2 => exti::InterruptHandler<interrupt::typelevel::EXTI2>;
 });
 
 const SHUNT_RESISTANCE: f32 = 10.0;
@@ -55,6 +59,8 @@ const MCP9800_ADDR_A5: u8 = 0b1001101;
 
 /// Change to CV regulation when voltage reach
 const BATTERY_CV_VOLTAGE: i32 = 8400;
+/// Delay EPS enable in seconds
+const EPS_OUTPUT_DELAY: u64 = 0;
 
 static CAN_CSP_IFACE: StaticCell<CanInterface<CanStm32Driver>> = StaticCell::new();
 static CAN_TX_BUF: StaticCell<TxBuf<4>> = StaticCell::new();
@@ -72,6 +78,14 @@ static SYS_CURRENT: AtomicI32 = AtomicI32::new(0);
 static BAT_TEMP1: AtomicI32 = AtomicI32::new(0);
 /// temperature in milli-degrees celcius
 static BAT_TEMP2: AtomicI32 = AtomicI32::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChargeState {
+    UnderTemp,
+    ChargeCC,
+    ChargeCV,
+    Full,
+}
 
 /// 30 Hz 50% duty cycle to reset external windowed watchdog
 #[embassy_executor::task]
@@ -252,6 +266,34 @@ async fn bms_control(dev3: I2cDevice<'static, NoopRawMutex, I2c<'static, Async, 
 }
 
 #[embassy_executor::task]
+async fn eps_control(
+    mut en_5v: Output<'static>,
+    mut en_3v3: Output<'static>,
+    mut flt_5v: ExtiInput<'static, Async>,
+    mut flt_3v3: ExtiInput<'static, Async>,
+) {
+    // wait for delay
+    let timer = Timer::after_secs(EPS_OUTPUT_DELAY);
+
+    timer.await;
+
+    // enable voltages
+    en_5v.set_high();
+    en_3v3.set_high();
+
+    loop {
+        match embassy_futures::select::select(flt_5v.wait_for_falling_edge(), flt_3v3.wait_for_falling_edge()).await{
+            Either::First(_) => {
+                // todo: handle fault
+            },
+            Either::Second(_) => {
+                // todo: handle fault
+            }
+        }
+    }
+}
+
+#[embassy_executor::task]
 async fn heater_control(
     dev4: I2cDevice<'static, NoopRawMutex, I2c<'static, Async, Master>>,
     dev5: I2cDevice<'static, NoopRawMutex, I2c<'static, Async, Master>>,
@@ -373,6 +415,12 @@ async fn main(spawner: Spawner) {
     let pwm5 = timer4_chs.ch3;
     let pwm6 = timer4_chs.ch1;
 
+    let en_5v = Output::new(p.PA1, Level::Low, Speed::Medium);
+    let en_3v3 = Output::new(p.PA3, Level::Low, Speed::Medium);
+
+    let flt_5v = ExtiInput::new(p.PA0, p.EXTI0, Pull::Up, Irqs);
+    let flt_3v3 = ExtiInput::new(p.PA2, p.EXTI2, Pull::Up, Irqs);
+
     // spawn mppt control task
     spawner.spawn(mppt_control(i2c_dev1, i2c_dev2, pwm1, pwm2, pwm3, pwm4, pwm5, pwm6).unwrap());
 
@@ -381,6 +429,9 @@ async fn main(spawner: Spawner) {
 
     // spawn heater control task
     spawner.spawn(heater_control(i2c_dev4, i2c_dev5).unwrap());
+    
+    // spawn eps control task
+    spawner.spawn(eps_control(en_5v, en_3v3, flt_5v, flt_3v3).unwrap());
 
     // initialise can
     let mut can_config = CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs);
@@ -403,13 +454,13 @@ async fn main(spawner: Spawner) {
     let driver = CanStm32Driver::new(can_tx, can_rx, spawner.make_send());
 
     // add CSP interface
-    csp::add_interface(CAN_CSP_IFACE.init(CanInterface::new(16, "UART", true, driver)));
+    csp::add_interface(CAN_CSP_IFACE.init(CanInterface::new(16, "CAN", true, driver)));
 
     // spawn BMS service task
     spawner.spawn(bms_service().unwrap());
     // spawn EPS service task
     spawner.spawn(eps_service().unwrap());
-
+    
     loop {
         csp::route_work().await;
     }

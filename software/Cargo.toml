@@ -6,7 +6,7 @@ edition = "2024"
 
 [dependencies]
 # Change stm32f103c8 to your chip name, if necessary.
-embassy-stm32 = { version = "0.6.0", features = [ "defmt", "stm32g431kb", "unstable-pac", "memory-x", "time-driver-any" ]  }
+embassy-stm32 = { version = "0.6.0", features = [ "defmt", "stm32g431kb", "unstable-pac", "memory-x", "time-driver-any", "exti" ]  }
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
 embassy-usb = { version = "0.6.0", features = ["defmt"] }
