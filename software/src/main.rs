@@ -64,6 +64,7 @@ const BATTERY_CV_VOLTAGE: i32 = 8400;
 const BATTERY_CV_EXIT: i32 = 8300;
 /// Minimum battery charging temperature in m℃
 const BATTERY_CHARGE_MIN_TEMP: i32 = 5000;
+const BATTERY_CHARGE_MAX_TEMP: i32 = 45000;
 /// Delay EPS enable in seconds
 const EPS_OUTPUT_DELAY: u64 = 0;
 
@@ -79,6 +80,8 @@ static BAT_VOLTAGE: AtomicI32 = AtomicI32::new(0);
 static BAT_CURRENT: AtomicI32 = AtomicI32::new(0);
 /// Solar panel output current in mA
 static SOLAR_CURRENT: AtomicI32 = AtomicI32::new(0);
+/// System voltage
+static SYS_VOLTAGE: AtomicI32 = AtomicI32::new(0);
 /// Total System current in mA
 static SYS_CURRENT: AtomicI32 = AtomicI32::new(0);
 /// temperature in milli-degrees celcius
@@ -206,6 +209,8 @@ async fn mppt_control(
         // Enter under temeperature state if temperature is too low
         if BAT_TEMP1.load(Ordering::Relaxed) < BATTERY_CHARGE_MIN_TEMP
             || BAT_TEMP2.load(Ordering::Relaxed) < BATTERY_CHARGE_MIN_TEMP
+            || BAT_TEMP1.load(Ordering::Relaxed) > BATTERY_CHARGE_MAX_TEMP
+            || BAT_TEMP2.load(Ordering::Relaxed) > BATTERY_CHARGE_MAX_TEMP
         {
             state = ChargeState::TempFault
         }
@@ -214,9 +219,9 @@ async fn mppt_control(
             // when under or over temperature, disable charging and do voltage regulation
             ChargeState::TempFault => {
                 // todo: disable charging
-                let vbat = BAT_VOLTAGE.load(Ordering::Relaxed);
+                let vsys = SYS_VOLTAGE.load(Ordering::Relaxed);
 
-                if vbat > BATTERY_CV_VOLTAGE{
+                if vsys > BATTERY_CV_VOLTAGE{
                     duty1 -= 0.001;
                     duty2 -= 0.001;
                     duty3 -= 0.001;
@@ -225,7 +230,7 @@ async fn mppt_control(
                     duty6 -= 0.001;
                 }
 
-                if vbat < BATTERY_CV_VOLTAGE{
+                if vsys < BATTERY_CV_VOLTAGE{
                     duty1 += 0.001;
                     duty2 += 0.001;
                     duty3 += 0.001;
@@ -237,7 +242,16 @@ async fn mppt_control(
                 // exit state if temperature is above threshold
                 if BAT_TEMP1.load(Ordering::Relaxed) >= BATTERY_CHARGE_MIN_TEMP
                     && BAT_TEMP2.load(Ordering::Relaxed) >= BATTERY_CHARGE_MIN_TEMP
+                    && BAT_TEMP1.load(Ordering::Relaxed) < BATTERY_CHARGE_MAX_TEMP
+                    && BAT_TEMP2.load(Ordering::Relaxed) < BATTERY_CHARGE_MAX_TEMP
                 {
+                    mppt1.set_duty(duty1);
+                    mppt2.set_duty(duty2);
+                    mppt3.set_duty(duty3);
+                    mppt4.set_duty(duty4);
+                    mppt5.set_duty(duty5);
+                    mppt6.set_duty(duty6);
+
                     state = ChargeState::ChargeCC
                 }
             }
@@ -291,10 +305,24 @@ async fn mppt_control(
 
                 // Go back to CC charging when voltage dropped
                 if vbat < BATTERY_CV_EXIT{
+                    mppt1.set_duty(duty1);
+                    mppt2.set_duty(duty2);
+                    mppt3.set_duty(duty3);
+                    mppt4.set_duty(duty4);
+                    mppt5.set_duty(duty5);
+                    mppt6.set_duty(duty6);
+
                     state = ChargeState::ChargeCC;
                 }
             }
         }
+
+        duty1 = duty1.clamp(0.0, 1.0);
+        duty2 = duty2.clamp(0.0, 1.0);
+        duty3 = duty3.clamp(0.0, 1.0);
+        duty4 = duty4.clamp(0.0, 1.0);
+        duty5 = duty5.clamp(0.0, 1.0);
+        duty6 = duty6.clamp(0.0, 1.0);
 
         pwm1.set_duty_cycle((pwm1.max_duty_cycle() as f32 * duty1) as u32);
         pwm2.set_duty_cycle((pwm2.max_duty_cycle() as f32 * duty2) as u32);

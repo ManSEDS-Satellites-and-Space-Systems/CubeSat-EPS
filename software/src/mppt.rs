@@ -32,4 +32,8 @@ impl Mppt {
 
         self.duty
     }
+
+    pub fn set_duty(&mut self, duty: f32) {
+        self.duty = duty
+    }
 }
